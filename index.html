@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="format-detection" content="telephone=no">
+<title>拼图游戏</title>
+<style>
+:root{
+  --bg:#2b2b3a;
+  --bar:#3a3a4a;
+  --accent:#ffd166;
+  --text:#fff;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+  font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}
+#app{max-width:520px;margin:0 auto;padding:12px 12px 24px;text-align:center;
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
+h1{margin:8px 0 2px;font-size:24px;color:var(--accent);letter-spacing:2px;}
+.sub{margin:0 0 12px;font-size:12px;color:#98a0b0;}
+
+#bar{background:var(--bar);border-radius:12px;padding:10px 8px;
+  display:flex;flex-wrap:wrap;gap:7px;justify-content:center;align-items:center;margin-bottom:14px;}
+button{background:#4a4a5c;color:#fff;border:none;border-radius:8px;
+  padding:8px 12px;font-size:14px;cursor:pointer;touch-action:manipulation;transition:transform .06s;}
+button:active{transform:scale(.95);}
+button.primary{background:#e0a825;color:#2b2b3a;font-weight:bold;}
+
+.seg{display:flex;align-items:center;gap:7px;font-size:13px;margin-left:2px;}
+.seg label{display:flex;align-items:center;gap:3px;cursor:pointer;}
+.seg input{margin:0;}
+
+#boardWrap{position:relative;margin:0 auto;width:100%;max-width:480px;}
+#board{position:relative;margin:0 auto;border-radius:8px;overflow:hidden;
+  box-shadow:0 8px 24px rgba(0,0,0,.4);touch-action:none;background:#fff;}
+.tile{position:absolute;left:0;top:0;background-repeat:no-repeat;cursor:grab;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.25);}
+.tile.dragging{cursor:grabbing;z-index:10;}
+#status{margin-top:14px;font-size:15px;color:var(--accent);min-height:22px;}
+
+/* 弹窗 */
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;
+  align-items:center;justify-content:center;z-index:100;padding:20px;}
+#modal.show{display:flex;}
+#modal .box{background:#fff;border-radius:12px;padding:16px 18px;max-width:92vw;text-align:center;color:#333;}
+#modal .ttl{font-size:18px;font-weight:bold;margin-bottom:8px;color:#e0a825;}
+#modal #modalText{font-size:15px;margin-bottom:10px;line-height:1.6;}
+#modal img{max-width:86vw;max-height:66vh;border-radius:6px;display:block;margin:0 auto;}
+#modal button{margin-top:12px;background:#e0a825;color:#2b2b3a;font-weight:bold;padding:10px 24px;}
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>🧩 拼图游戏</h1>
+  <p class="sub">拖动图片块交换位置，还原完整图片</p>
+  <div id="bar">
+    <button id="btnNew">试玩新图</button>
+    <button id="btnSwitch">切换图片</button>
+    <button id="btnLoad">加载图片</button>
+    <button id="btnView">查看原图</button>
+    <button id="btnChallenge" class="primary">挑战模式</button>
+    <div class="seg">
+      <label><input type="radio" name="level" value="2">容易</label>
+      <label><input type="radio" name="level" value="3" checked>中等</label>
+      <label><input type="radio" name="level" value="4">困难</label>
+    </div>
+  </div>
+  <div id="boardWrap"><div id="board"></div></div>
+  <div id="status"></div>
+</div>
+
+<div id="modal">
+  <div class="box">
+    <div class="ttl" id="modalTitle"></div>
+    <div id="modalText"></div>
+    <img id="modalImg" alt="原图">
+    <button id="modalBtn">确定</button>
+  </div>
+</div>
+<input type="file" id="fileInput" accept="image/*" hidden>
+
+<script>
+'use strict';
+const SRC = 600; // 内置图片分辨率（正方形）
+
+const state = {
+  level: 3,          // 2 / 3 / 4
+  imageIndex: 0,
+  images: [],        // 每张图是一个 <canvas>
+  board: [],         // 每个格子当前放的原始块编号
+  moves: 0,
+  challenge: false,
+  elapsed: 0,
+  timeLimit: 60,
+  timer: null,
+};
+
+const boardEl = document.getElementById('board');
+const statusEl = document.getElementById('status');
+const modal = document.getElementById('modal');
+const modalTitle = document.getElementById('modalTitle');
+const modalText = document.getElementById('modalText');
+const modalImg = document.getElementById('modalImg');
+const modalBtn = document.getElementById('modalBtn');
+const fileInput = document.getElementById('fileInput');
+
+let boardSize = 480;
+let cell = 0;
+let drag = null;
+
+/* ============ 内置图片（Canvas 绘制，无需外部文件） ============ */
+function makeCanvas() {
+  const c = document.createElement('canvas');
+  c.width = c.height = SRC;
+  return c;
+}
+
+// 图1：彩色渐变 + 圆形 + 文字
+function style1() {
+  const c = makeCanvas(), x = c.getContext('2d');
+  for (let y = 0; y < SRC; y++) {
+    const r = Math.round(255 * y / SRC);
+    x.fillStyle = 'rgb(' + r + ',80,180)';
+    x.fillRect(0, y, SRC, 1);
+  }
+  x.fillStyle = 'rgb(255,209,102)';
+  x.beginPath(); x.arc(300, 300, 180, 0, Math.PI * 2); x.fill();
+  x.fillStyle = '#fff';
+  x.beginPath(); x.arc(300, 300, 80, 0, Math.PI * 2); x.fill();
+  x.fillStyle = '#fff';
+  x.font = 'bold 180px sans-serif';
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('1', 300, 300);
+  return c;
+}
+
+// 图2：方格棋盘
+function style2() {
+  const c = makeCanvas(), x = c.getContext('2d');
+  const colors = ['rgb(231,76,60)', 'rgb(52,152,219)', 'rgb(46,204,113)', 'rgb(241,196,15)'];
+  const s = 150;
+  for (let r = 0; r < 4; r++)
+    for (let k = 0; k < 4; k++) {
+      x.fillStyle = colors[(r + k) % 4];
+      x.fillRect(k * s, r * s, s, s);
+    }
+  x.fillStyle = '#fff';
+  x.font = 'bold 180px sans-serif';
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('2', 300, 300);
+  return c;
+}
+
+// 图3：同心圆
+function style3() {
+  const c = makeCanvas(), x = c.getContext('2d');
+  for (let radius = 280; radius > 20; radius -= 40) {
+    const r = Math.round(radius * 255 / 280);
+    const b = Math.round(200 - radius * 255 / 560);
+    x.fillStyle = 'rgb(' + r + ',120,' + b + ')';
+    x.beginPath(); x.arc(300, 300, radius, 0, Math.PI * 2); x.fill();
+  }
+  x.fillStyle = '#fff';
+  x.font = 'bold 150px sans-serif';
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('3', 300, 300);
+  return c;
+}
+
+/* ============ 布局 / 渲染 ============ */
+function measure() {
+  const wrap = document.getElementById('boardWrap');
+  cell = Math.floor(Math.min(wrap.clientWidth, 480) / state.level);
+  boardSize = cell * state.level;
+  boardEl.style.width = boardSize + 'px';
+  boardEl.style.height = boardSize + 'px';
+}
+
+function render() {
+  measure();
+  boardEl.innerHTML = '';
+  const img = state.images[state.imageIndex];
+  const url = img._url || (img._url = img.toDataURL('image/png'));
+  const n = state.level * state.level;
+  for (let pos = 0; pos < n; pos++) {
+    const tileIndex = state.board[pos];
+    const col = tileIndex % state.level;
+    const row = Math.floor(tileIndex / state.level);
+    const d = document.createElement('div');
+    d.className = 'tile';
+    d.style.width = cell + 'px';
+    d.style.height = cell + 'px';
+    d.style.left = (pos % state.level) * cell + 'px';
+    d.style.top = Math.floor(pos / state.level) * cell + 'px';
+    d.style.backgroundImage = 'url(' + url + ')';
+    d.style.backgroundSize = boardSize + 'px ' + boardSize + 'px';
+    d.style.backgroundPosition = (-col * cell) + 'px ' + (-row * cell) + 'px';
+    d.dataset.pos = pos;
+    boardEl.appendChild(d);
+  }
+}
+
+/* ============ 核心逻辑 ============ */
+function shuffle() {
+  const n = state.level * state.level;
+  state.board = [];
+  for (let i = 0; i < n; i++) state.board.push(i);
+  const solved = state.board.join(',');
+  do {
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = state.board[i]; state.board[i] = state.board[j]; state.board[j] = t;
+    }
+  } while (state.board.join(',') === solved);
+}
+
+function newPuzzle() {
+  stopChallenge();
+  shuffle();
+  state.moves = 0;
+  render();
+  setStatus('已打乱，拖动图片块进行拼图吧');
+}
+
+function checkWin() {
+  let solved = true;
+  for (let i = 0; i < state.board.length; i++) if (state.board[i] !== i) { solved = false; break; }
+  if (solved) {
+    if (state.challenge) {
+      const t = state.elapsed;
+      stopChallenge();
+      showModal('挑战成功', '恭喜！你在 ' + t + ' 秒内完成了 ' + state.level + '×' + state.level + ' 拼图！');
+    } else {
+      showModal('拼图成功', '太棒了，你完成了拼图！');
+    }
+    setStatus('完成！共移动 ' + state.moves + ' 步');
+  } else {
+    setStatus((state.challenge ? '挑战中 ' : '') + '已移动 ' + state.moves + ' 步');
+  }
+}
+
+/* ============ 拖动换位（鼠标 + 触屏） ============ */
+boardEl.addEventListener('pointerdown', function (e) {
+  const t = e.target.closest('.tile');
+  if (!t) return;
+  e.preventDefault();
+  boardEl.setPointerCapture(e.pointerId);
+  drag = { pos: parseInt(t.dataset.pos, 10), el: t, startX: e.clientX, startY: e.clientY };
+  t.classList.add('dragging');
+});
+
+boardEl.addEventListener('pointermove', function (e) {
+  if (!drag) return;
+  drag.el.style.transform = 'translate(' + (e.clientX - drag.startX) + 'px,' + (e.clientY - drag.startY) + 'px)';
+});
+
+function endDrag(e) {
+  if (!drag) return;
+  const el = drag.el, from = drag.pos;
+  drag = null;
+  el.classList.remove('dragging');
+  el.style.transform = '';
+  const rect = boardEl.getBoundingClientRect();
+  const c = Math.floor((e.clientX - rect.left) / cell);
+  const r = Math.floor((e.clientY - rect.top) / cell);
+  const n = state.level;
+  if (c >= 0 && c < n && r >= 0 && r < n) {
+    const to = r * n + c;
+    if (to !== from) {
+      const t = state.board[from]; state.board[from] = state.board[to]; state.board[to] = t;
+      state.moves++;
+    }
+  }
+  render();
+  checkWin();
+}
+boardEl.addEventListener('pointerup', endDrag);
+boardEl.addEventListener('pointercancel', function () {
+  if (drag) { drag.el.classList.remove('dragging'); drag.el.style.transform = ''; drag = null; }
+});
+
+/* ============ 图片切换 / 加载 / 查看 ============ */
+function switchImage() {
+  state.imageIndex = (state.imageIndex + 1) % state.images.length;
+  newPuzzle();
+}
+
+function loadImage() {
+  fileInput.value = '';
+  fileInput.click();
+}
+
+fileInput.addEventListener('change', function () {
+  const f = fileInput.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = function (ev) {
+    const im = new Image();
+    im.onload = function () {
+      const c = coverCrop(im);
+      state.images.push(c);
+      state.imageIndex = state.images.length - 1;
+      newPuzzle();
+    };
+    im.onerror = function () { alert('无法打开图片'); };
+    im.src = ev.target.result;
+  };
+  reader.readAsDataURL(f);
+});
+
+// 居中裁剪成正方形并缩放到 SRC×SRC（保持比例、不拉伸）
+function coverCrop(img) {
+  const c = makeCanvas(), x = c.getContext('2d');
+  const s = Math.min(img.width, img.height);
+  const sx = (img.width - s) / 2, sy = (img.height - s) / 2;
+  x.drawImage(img, sx, sy, s, s, 0, 0, SRC, SRC);
+  c._url = c.toDataURL('image/png');
+  return c;
+}
+
+function viewOriginal() {
+  const img = state.images[state.imageIndex];
+  showModal('原图', '', img._url);
+  modalBtn.textContent = '关闭';
+}
+
+/* ============ 挑战模式 ============ */
+function startChallenge() {
+  const limits = { 2: 20, 3: 60, 4: 120 };
+  state.timeLimit = limits[state.level];
+  newPuzzle();               // 会停止上一局挑战并重新打乱
+  state.challenge = true;
+  state.elapsed = 0;
+  state.timer = setInterval(tick, 1000);
+  setStatus('挑战开始！限时 ' + state.timeLimit + ' 秒，加油！');
+}
+
+function tick() {
+  if (!state.challenge) return;
+  state.elapsed++;
+  const remain = state.timeLimit - state.elapsed;
+  if (remain <= 0) {
+    stopChallenge();
+    setStatus('时间到！挑战失败');
+    showModal('挑战失败', '超时了，挑战失败！');
+    return;
+  }
+  setStatus('挑战中：剩余 ' + remain + ' 秒  已移动 ' + state.moves + ' 步');
+}
+
+function stopChallenge() {
+  state.challenge = false;
+  if (state.timer) { clearInterval(state.timer); state.timer = null; }
+}
+
+/* ============ 界面辅助 ============ */
+function setStatus(t) { statusEl.textContent = t; }
+
+function showModal(title, text, imgUrl) {
+  modalTitle.textContent = title;
+  modalText.textContent = text || '';
+  modalText.style.display = text ? '' : 'none';
+  if (imgUrl) { modalImg.src = imgUrl; modalImg.style.display = 'block'; }
+  else modalImg.style.display = 'none';
+  modalBtn.textContent = '确定';
+  modal.classList.add('show');
+}
+
+/* ============ 事件绑定 / 初始化 ============ */
+document.getElementById('btnNew').onclick = newPuzzle;
+document.getElementById('btnSwitch').onclick = switchImage;
+document.getElementById('btnLoad').onclick = loadImage;
+document.getElementById('btnView').onclick = viewOriginal;
+document.getElementById('btnChallenge').onclick = startChallenge;
+modalBtn.onclick = function () { modal.classList.remove('show'); };
+modal.addEventListener('click', function (e) { if (e.target === modal) modal.classList.remove('show'); });
+
+document.querySelectorAll('input[name="level"]').forEach(function (r) {
+  r.addEventListener('change', function () {
+    state.level = parseInt(r.value, 10);
+    newPuzzle();
+  });
+});
+
+window.addEventListener('resize', render);
+
+state.images = [style1(), style2(), style3()];
+state.images.forEach(function (c) { c._url = c.toDataURL('image/png'); });
+newPuzzle();
+</script>
+</body>
+</html>
